@@ -1,0 +1,198 @@
+Business problem: A report to determine which customers are the most frequent renters AND which customers have generated the highest revenue.
+
+A1. 
+The detailed table will include the following: CustomerID(int), first_name(VARCHAR), last_name(VARCHAR), email(VARCHAR), total_revenue(INT), rental_count(INT), address(VARCHAR), city(VARCHAR), country(VARCHAR)
+
+The summary table will include the following: customerid(INT), first_name(VARCHAR), last_name(VARCHAR), total_revenue(INT), rental_count(INT)
+
+A2. Describe the types of data fields used for the report…. INT, DECIMAL, and VARCHAR
+
+A3. Identify two tables from the dataset that will provide the data needed for the summary/detailed table section of this report…. For the summary AND detailed tables we will be utilizing the customer, payment, and rental tables from the dataset.
+
+A4. Identify at least one field in the detailed table section that will require a custom transformation with a user-defined function and explain why it should be transformed (e.g., you might translate a field with a value of N to No and Y to Yes)….
+
+(Rework this) While the amount field in the payment table typically stores numeric values representing payment amounts, displaying these values as formatted currency enhances readability and presentation in reports. 
+
+
+A5. Explain the different business uses of the detailed table section and the summary table section of the report…. 
+
+The summary table will be able to provide us with key metrics such as total revenue generated and total number of rentals for each customer. And we can take this information and perform comparative analysis.
+
+The detailed table will provide us with granular rental and payment details for each customer, transaction level insights and also operational insights which will help us understand the specific interactions customers have with the rental service.
+
+A6. Explain how frequently your report should be refreshed to remain relevant to stakeholders….It depends what the stakeholders intend to do with the information. They could leverage this information to provide a customer reward system to most frequent renters or high revenue generating customers. Or use this information to gauge general customer patterns. In general though I believe this report should be ran weekly to monthly.
+
+Code section:
+
+I regularly used these queries whilst testing
+
+DELETE FROM customer_summary
+SELECT * FROM customer_summary
+
+DELETE FROM detailed_table
+SELECT * FROM detailed_table
+
+DROP TABLE detailed_table
+DROP TABLE customer_summary
+
+
+B. This code will perform the transformation previously mentioned in part A4
+
+-- Create or replace the function to format amount as currency
+CREATE OR REPLACE FUNCTION format_currency(amount numeric)
+RETURNS text AS $$
+BEGIN
+    RETURN '$' || TO_CHAR(amount, 'FM999,999,999,999.99');
+END;
+$$ LANGUAGE plpgsql;
+
+
+-- Create the detailed table
+CREATE TABLE detailed_table (
+    customer_id INT,
+    payment_id INT,
+    payment_date DATE,
+    amount NUMERIC(10, 2),
+    rental_id INT,
+    rental_date DATE);
+
+
+-- Create the summary table
+CREATE TABLE customer_summary (
+    customer_id INT PRIMARY KEY,
+    total_revenue DECIMAL(10, 2) DEFAULT 0.00,
+    total_rentals INT DEFAULT 0
+);
+
+
+-- Insert data into detailed_table from source tables
+INSERT INTO detailed_table (customer_id, payment_id, payment_date, amount, rental_id, rental_date)
+SELECT 
+    c.customer_id,
+    p.payment_id,
+    p.payment_date,
+    p.amount AS payment_amount,
+    r.rental_id,
+    r.rental_date
+FROM 
+    customer c
+JOIN 
+    payment p ON c.customer_id = p.customer_id
+JOIN 
+    rental r ON p.rental_id = r.rental_id
+ORDER BY 
+    c.customer_id, p.payment_date, r.rental_date;
+
+-- insert data into summary_table from source tables
+INSERT INTO customer_summary (customer_id, total_revenue, total_rentals)
+SELECT
+    p.customer_id,
+    SUM(p.amount) AS total_revenue,
+    COUNT(r.rental_id) AS total_rentals
+FROM
+    payment p
+JOIN
+    rental r ON p.rental_id = r.rental_id
+GROUP BY
+    p.customer_id;
+
+
+
+
+-- Create or replace the trigger function
+CREATE OR REPLACE FUNCTION update_customer_summary()
+RETURNS TRIGGER AS $$
+BEGIN
+    -- Update total revenue and total rentals for the customer in the summary table
+    UPDATE customer_summary
+    SET 
+        total_revenue = total_revenue + NEW.amount,
+        total_rentals = total_rentals + 1
+    WHERE customer_id = NEW.customer_id;
+
+    -- If customer does not exist in summary table, insert new row
+    IF NOT FOUND THEN
+        INSERT INTO customer_summary (customer_id, total_revenue, total_rentals)
+        VALUES (NEW.customer_id, NEW.amount, 1);
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create the trigger on the detailed table
+CREATE TRIGGER update_customer_summary_trigger
+AFTER INSERT ON detailed_table
+FOR EACH ROW
+EXECUTE FUNCTION update_customer_summary();
+
+
+
+
+
+
+
+
+
+
+-- Create or replace the stored procedure
+CREATE OR REPLACE PROCEDURE refresh_detailed_and_summary_tables()
+AS $$
+BEGIN
+    -- Clear the contents of the detailed table
+    TRUNCATE TABLE detailed_table;
+
+    -- Clear the contents of the summary table
+    TRUNCATE TABLE customer_summary;
+
+    -- Insert raw data into the detailed table
+    INSERT INTO detailed_table (customer_id, payment_id, payment_date, amount, rental_id, rental_date)
+    SELECT 
+        c.customer_id,
+        p.payment_id,
+        p.payment_date,
+        p.amount,
+        r.rental_id,
+        r.rental_date
+    FROM 
+        customer c
+    JOIN 
+        payment p ON c.customer_id = p.customer_id
+    JOIN 
+        rental r ON p.rental_id = r.rental_id
+    ORDER BY 
+        c.customer_id, p.payment_date, r.rental_date;
+
+    -- Update the summary table based on the newly inserted data
+    INSERT INTO customer_summary (customer_id, total_revenue, total_rentals)
+    SELECT 
+        customer_id,
+        SUM(amount) AS total_revenue,
+        COUNT(rental_id) AS total_rentals
+    FROM 
+        detailed_table
+    GROUP BY 
+        customer_id
+	ON CONFLICT (customer_id)
+	DO UPDATE SET
+		total_revenue = EXCLUDED.total_revenue,
+		total_rentals = EXCLUDED.total_rentals;
+
+END;
+$$ LANGUAGE plpgsql;
+
+
+CALL refresh_detailed_and_summary_tables();
+
+SELECT * FROM detailed_table
+SELECT * FROM customer_summary
+
+
+Finish..
+
+F1.
+I would use the PGAGENT tool and have it run either at the end of the day on the last day of the business “week” or end of day end of the month.
+
+G. (Insert video link here)
+
+H. Considering Triggers and procedures were something I do not recall learning in my previous SQL classes I utilized the Postgresql documentation, and ChatGPT. 
